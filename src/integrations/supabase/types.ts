@@ -59,12 +59,6 @@ export type Database = {
           id: string
           storage_path: string
           uploader_name: string | null
-          file_size: number | null
-          is_video: boolean | null
-          video_duration: number | null
-          video_width: number | null
-          video_height: number | null
-          file_extension: string | null
         }
         Insert: {
           caption?: string | null
@@ -74,12 +68,6 @@ export type Database = {
           id?: string
           storage_path: string
           uploader_name?: string | null
-          file_size?: number | null
-          is_video?: boolean | null
-          video_duration?: number | null
-          video_width?: number | null
-          video_height?: number | null
-          file_extension?: string | null
         }
         Update: {
           caption?: string | null
@@ -89,12 +77,6 @@ export type Database = {
           id?: string
           storage_path?: string
           uploader_name?: string | null
-          file_size?: number | null
-          is_video?: boolean | null
-          video_duration?: number | null
-          video_width?: number | null
-          video_height?: number | null
-          file_extension?: string | null
         }
         Relationships: [
           {

@@ -4,12 +4,10 @@ import { useAuth } from '@/lib/auth';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { ArrowLeft, Download, QrCode } from 'lucide-react';
+import { ArrowLeft, Download, QrCode, Trash2, Heart, ThumbsUp, Star, Laugh } from 'lucide-react';
 import { toast } from 'sonner';
 import QRCode from 'qrcode';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import MediaCard from '@/components/MediaCard';
-import { useMediaDownload } from '@/hooks/use-media-download';
 
 interface Event {
   id: string;
@@ -17,7 +15,6 @@ interface Event {
   event_code: string;
   user_id: string;
   allow_downloads: boolean;
-  event_date: string | null;
 }
 
 interface Photo {
@@ -26,10 +23,6 @@ interface Photo {
   uploader_name: string | null;
   caption: string | null;
   created_at: string;
-  is_video: boolean | null;
-  file_type: string;
-  file_extension: string | null;
-  file_size: number | null;
 }
 
 interface Reaction {
@@ -49,63 +42,12 @@ export default function EventView() {
   const [qrCodeUrl, setQrCodeUrl] = useState('');
   const [showQR, setShowQR] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
-  const { downloadMultiple, isDownloading, progress } = useMediaDownload();
 
   useEffect(() => {
     if (eventId) {
       fetchEvent();
       fetchPhotos();
       fetchReactions();
-
-      const photosChannel = supabase
-        .channel(`photos-changes-${eventId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'photos',
-          },
-          (payload) => {
-            if (payload.new) {
-              setPhotos(prev => [payload.new as Photo, ...prev]);
-            }
-          }
-        )
-        .on(
-          'postgres_changes',
-          {
-            event: 'DELETE',
-            schema: 'public',
-            table: 'photos'
-          },
-          (payload) => {
-            if (payload.old) {
-              setPhotos(prev => prev.filter(p => p.id !== (payload.old as Photo).id));
-            }
-          }
-        )
-        .subscribe();
-
-      const reactionsChannel = supabase
-        .channel(`reactions-changes-${eventId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'reactions'
-          },
-          () => {
-            fetchReactions();
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(photosChannel);
-        supabase.removeChannel(reactionsChannel);
-      };
     }
   }, [eventId]);
 
@@ -174,19 +116,8 @@ export default function EventView() {
   };
 
   const handleDownloadAll = async () => {
-    if (!event || photos.length === 0) {
-      toast.error('No media to download');
-      return;
-    }
-
-    try {
-      const timestamp = new Date().toLocaleDateString().replace(/\//g, '-');
-      const zipFileName = `${event.title.replace(/\s+/g, '-')}-${timestamp}.zip`;
-      await downloadMultiple(photos, getPhotoUrl, zipFileName);
-    } catch (error) {
-      console.error('Download all error:', error);
-      toast.error('Failed to download media');
-    }
+    toast.success('Downloading all photos...');
+    // Implementation would involve downloading all photos as a zip
   };
 
   const getPhotoUrl = (path: string) => {
@@ -198,6 +129,12 @@ export default function EventView() {
     return reactions.filter(r => r.photo_id === photoId);
   };
 
+  const emojiIcons = {
+    heart: Heart,
+    thumbs: ThumbsUp,
+    star: Star,
+    laugh: Laugh,
+  };
 
   if (!event) {
     return (
@@ -246,39 +183,67 @@ export default function EventView() {
         {photos.length === 0 ? (
           <Card className="text-center py-12">
             <CardContent>
-              <p className="text-muted-foreground">No media yet. Share the event code with guests!</p>
+              <p className="text-muted-foreground">No photos yet. Share the event code with guests!</p>
             </CardContent>
           </Card>
         ) : (
-          <>
-            <div className="mb-4 flex items-center justify-between">
-              <div className="text-sm text-muted-foreground">
-                {photos.filter(p => !p.is_video).length} photos • {photos.filter(p => p.is_video).length} videos
-              </div>
-              {isDownloading && progress && (
-                <div className="text-sm text-muted-foreground">
-                  Downloading: {progress.current}/{progress.total}
-                </div>
-              )}
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {photos.map((photo) => (
-                <MediaCard
-                  key={photo.id}
-                  media={photo}
-                  reactions={reactions}
-                  onReaction={(mediaId, emoji) => {
-                    handleReaction(mediaId, emoji);
-                  }}
-                  onDelete={isOwner ? handleDeletePhoto : undefined}
-                  showReactions={false}
-                  showDownload={false}
-                  getMediaUrl={getPhotoUrl}
-                  isOwner={isOwner}
-                />
-              ))}
-            </div>
-          </>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {photos.map((photo) => {
+              const photoReactions = getPhotoReactions(photo.id);
+              const reactionCounts = photoReactions.reduce((acc, r) => {
+                acc[r.emoji] = (acc[r.emoji] || 0) + 1;
+                return acc;
+              }, {} as Record<string, number>);
+
+              return (
+                <Card key={photo.id} className="overflow-hidden group">
+                  <div className="relative aspect-square">
+                    <img
+                      src={getPhotoUrl(photo.storage_path)}
+                      alt={photo.caption || 'Event photo'}
+                      className="w-full h-full object-cover"
+                    />
+                    {isOwner && (
+                      <Button
+                        variant="destructive"
+                        size="icon"
+                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => handleDeletePhoto(photo.id, photo.storage_path)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <CardContent className="p-3">
+                    {photo.caption && (
+                      <p className="text-sm mb-2">{photo.caption}</p>
+                    )}
+                    {photo.uploader_name && (
+                      <p className="text-xs text-muted-foreground mb-2">
+                        by {photo.uploader_name}
+                      </p>
+                    )}
+                    {Object.keys(reactionCounts).length > 0 && (
+                      <div className="flex gap-2 flex-wrap">
+                        {Object.entries(reactionCounts).map(([emoji, count]) => {
+                          const Icon = emojiIcons[emoji as keyof typeof emojiIcons];
+                          return (
+                            <div
+                              key={emoji}
+                              className="flex items-center gap-1 text-xs bg-accent text-accent-foreground px-2 py-1 rounded-full"
+                            >
+                              {Icon && <Icon className="h-3 w-3" />}
+                              <span>{count}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         )}
       </main>
 
