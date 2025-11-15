@@ -5,13 +5,16 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Upload, Heart, ThumbsUp, Star, Laugh, Camera } from 'lucide-react';
+import { Upload, Camera } from 'lucide-react';
 import { toast } from 'sonner';
+import MediaCard from '@/components/MediaCard';
+import { useMediaDownload } from '@/hooks/use-media-download';
 
 interface Event {
   id: string;
   title: string;
   description: string | null;
+  allow_downloads: boolean | null;
 }
 
 interface Photo {
@@ -20,6 +23,10 @@ interface Photo {
   uploader_name: string | null;
   caption: string | null;
   created_at: string;
+  is_video: boolean | null;
+  file_type: string;
+  file_extension: string | null;
+  file_size: number | null;
 }
 
 interface Reaction {
@@ -28,13 +35,6 @@ interface Reaction {
   emoji: string;
   guest_identifier: string;
 }
-
-const EMOJIS = [
-  { type: 'heart', icon: Heart, label: 'Love' },
-  { type: 'thumbs', icon: ThumbsUp, label: 'Like' },
-  { type: 'star', icon: Star, label: 'Amazing' },
-  { type: 'laugh', icon: Laugh, label: 'Fun' },
-];
 
 export default function GuestView() {
   const { eventCode } = useParams();
@@ -46,6 +46,7 @@ export default function GuestView() {
   const [isUploading, setIsUploading] = useState(false);
   const [guestId] = useState(() => `guest-${Date.now()}-${Math.random()}`);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { downloadSingle } = useMediaDownload();
 
   useEffect(() => {
     if (eventCode) {
@@ -53,13 +54,26 @@ export default function GuestView() {
       fetchPhotos();
       fetchReactions();
 
-      // Subscribe to realtime updates
       const photosChannel = supabase
-        .channel('photos-changes')
+        .channel(`photos-changes-${eventCode}`)
         .on(
           'postgres_changes',
           {
-            event: '*',
+            event: 'INSERT',
+            schema: 'public',
+            table: 'photos',
+            filter: `event_id=eq.`,
+          },
+          (payload) => {
+            if (payload.new) {
+              setPhotos(prev => [payload.new as Photo, ...prev]);
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'DELETE',
             schema: 'public',
             table: 'photos'
           },
@@ -70,7 +84,7 @@ export default function GuestView() {
         .subscribe();
 
       const reactionsChannel = supabase
-        .channel('reactions-changes')
+        .channel(`reactions-changes-${eventCode}`)
         .on(
           'postgres_changes',
           {
@@ -135,6 +149,7 @@ export default function GuestView() {
     for (const file of Array.from(files)) {
       const fileExt = file.name.split('.').pop();
       const fileName = `${event.id}/${Date.now()}-${Math.random()}.${fileExt}`;
+      const isVideo = file.type.startsWith('video/');
 
       const { error: uploadError } = await supabase.storage
         .from('event-photos')
@@ -145,23 +160,57 @@ export default function GuestView() {
         continue;
       }
 
+      let videoDuration: number | null = null;
+      let videoWidth: number | null = null;
+      let videoHeight: number | null = null;
+
+      if (isVideo) {
+        try {
+          const videoData = await new Promise<{ duration: number; width: number; height: number }>((resolve) => {
+            const video = document.createElement('video');
+            video.onloadedmetadata = () => {
+              resolve({
+                duration: Math.round(video.duration),
+                width: video.videoWidth,
+                height: video.videoHeight,
+              });
+            };
+            video.src = URL.createObjectURL(file);
+          });
+          videoDuration = videoData.duration;
+          videoWidth = videoData.width;
+          videoHeight = videoData.height;
+        } catch (err) {
+          console.error('Failed to extract video metadata:', err);
+        }
+      }
+
       const { error: dbError } = await supabase.from('photos').insert({
         event_id: event.id,
         storage_path: fileName,
         uploader_name: uploaderName || null,
         caption: caption || null,
         file_type: file.type,
+        file_size: file.size,
+        is_video: isVideo,
+        video_duration: videoDuration,
+        video_width: videoWidth,
+        video_height: videoHeight,
+        file_extension: `.${fileExt}`,
       });
 
       if (dbError) {
-        toast.error('Failed to save photo');
+        toast.error('Failed to save upload');
       }
     }
 
     setIsUploading(false);
     setCaption('');
-    toast.success('Photos uploaded!');
-    fetchPhotos();
+    setUploaderName('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    toast.success('Files uploaded!');
   };
 
   const handleReaction = async (photoId: string, emoji: string) => {
@@ -227,7 +276,8 @@ export default function GuestView() {
       <div className="container mx-auto px-4 py-8">
         <Card className="mb-8 shadow-[var(--shadow-card)]">
           <CardContent className="p-6">
-            <h2 className="text-lg font-semibold mb-4">Share Your Photos</h2>
+            <h2 className="text-lg font-semibold mb-2">Share Your Memories</h2>
+            <p className="text-sm text-muted-foreground mb-4">Upload photos and videos to the event</p>
             <div className="space-y-4">
               <div>
                 <Input
@@ -258,7 +308,7 @@ export default function GuestView() {
                 className="w-full"
               >
                 <Upload className="h-4 w-4 mr-2" />
-                {isUploading ? 'Uploading...' : 'Upload Photos'}
+                {isUploading ? 'Uploading...' : 'Upload Photos & Videos'}
               </Button>
             </div>
           </CardContent>
@@ -268,63 +318,32 @@ export default function GuestView() {
           <Card className="text-center py-12">
             <CardContent>
               <p className="text-muted-foreground">
-                No photos yet. Be the first to share a moment!
+                No media yet. Be the first to share a moment!
               </p>
             </CardContent>
           </Card>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {photos.map((photo) => {
-              const photoReactions = getPhotoReactions(photo.id);
-              const reactionCounts = photoReactions.reduce((acc, r) => {
-                acc[r.emoji] = (acc[r.emoji] || 0) + 1;
-                return acc;
-              }, {} as Record<string, number>);
-
-              return (
-                <Card key={photo.id} className="overflow-hidden">
-                  <div className="relative aspect-square">
-                    <img
-                      src={getPhotoUrl(photo.storage_path)}
-                      alt={photo.caption || 'Event photo'}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <CardContent className="p-3">
-                    {photo.caption && (
-                      <p className="text-sm mb-2">{photo.caption}</p>
-                    )}
-                    {photo.uploader_name && (
-                      <p className="text-xs text-muted-foreground mb-3">
-                        by {photo.uploader_name}
-                      </p>
-                    )}
-                    <div className="flex gap-1 flex-wrap">
-                      {EMOJIS.map(({ type, icon: Icon, label }) => {
-                        const count = reactionCounts[type] || 0;
-                        const reacted = hasReacted(photo.id, type);
-                        return (
-                          <Button
-                            key={type}
-                            variant={reacted ? 'default' : 'outline'}
-                            size="sm"
-                            className="h-8 px-2"
-                            onClick={() => handleReaction(photo.id, type)}
-                            title={label}
-                          >
-                            <Icon className="h-3 w-3" />
-                            {count > 0 && (
-                              <span className="ml-1 text-xs">{count}</span>
-                            )}
-                          </Button>
-                        );
-                      })}
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+          <>
+            <div className="mb-4 text-sm text-muted-foreground">
+              {photos.filter(p => !p.is_video).length} photos • {photos.filter(p => p.is_video).length} videos
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+              {photos.map((photo) => (
+                <MediaCard
+                  key={photo.id}
+                  media={photo}
+                  reactions={reactions}
+                  onReaction={handleReaction}
+                  onDownload={() => downloadSingle(photo, getPhotoUrl)}
+                  showReactions={true}
+                  showDownload={event?.allow_downloads}
+                  allowDownloads={event?.allow_downloads ?? true}
+                  getMediaUrl={getPhotoUrl}
+                  hasReacted={hasReacted}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </div>
