@@ -56,9 +56,15 @@ export default function EventView() {
       .from('events')
       .select('*')
       .eq('id', eventId)
-      .single();
+      .maybeSingle();
 
-    if (error || !data) {
+    if (error) {
+      toast.error('Error loading event');
+      console.error('Event fetch error:', error);
+      return;
+    }
+
+    if (!data) {
       toast.error('Event not found');
       navigate('/dashboard');
       return;
